@@ -1,0 +1,86 @@
+# Required GitHub secrets:
+#   QUAY_USERNAME — Quay.io username or robot account (e.g. caugello+ci_bot)
+#   QUAY_PASSWORD — Quay.io password or robot account token
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: '1.21.x'
+
+jobs:
+  lint-test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::Files need formatting:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -v -race -count=1 ./...
+
+  build-push:
+    name: Build & Push → Quay
+    needs: lint-test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      REGISTRY: quay.io
+      IMAGE_NAME: caugello/rotational
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine image tags
+        id: meta
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+            echo "tags=${version},latest" >> "${GITHUB_OUTPUT}"
+          else
+            echo "tags=latest,sha-${GITHUB_SHA::7}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build image
+        run: |
+          for t in $(echo "${{ steps.meta.outputs.tags }}" | tr ',' ' '); do
+            docker build -t "${REGISTRY}/${IMAGE_NAME}:${t}" .
+          done
+
+      - name: Log in to Quay
+        run: |
+          echo "${{ secrets.QUAY_PASSWORD }}" | docker login "${REGISTRY}" \
+            -u "${{ secrets.QUAY_USERNAME }}" --password-stdin
+
+      - name: Push images
+        run: |
+          for t in $(echo "${{ steps.meta.outputs.tags }}" | tr ',' ' '); do
+            docker push "${REGISTRY}/${IMAGE_NAME}:${t}"
+          done
