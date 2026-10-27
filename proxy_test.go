@@ -697,3 +697,27 @@ func TestProxyConnectBurn(t *testing.T) {
 		t.Errorf("HTTP request after CONNECT burn: got status %d, want 200", httpResp.StatusCode)
 	}
 }
+
+func TestProxyRejectsNonProxyRequest(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("upstream must not be contacted")
+	}))
+	defer up.Close()
+
+	p := NewProxy([]*url.URL{mustParse(up.URL)}, time.Minute)
+	srv := httptest.NewServer(p)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+	if p.upstreams[0].isBurned() {
+		t.Error("upstream burned by a non-proxy request")
+	}
+}

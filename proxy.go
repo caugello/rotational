@@ -73,7 +73,15 @@ func (p *Proxy) next() *upstream {
 
 // ServeHTTP implements http.Handler.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Proxy requests carry an absolute URI; anything else (health checks,
+	// browsers hitting us directly) is the client's mistake, not the upstream's.
+	if r.Method != http.MethodConnect && !r.URL.IsAbs() {
+		http.Error(w, "this is a forward proxy: absolute URI required", http.StatusBadRequest)
+		return
+	}
+
 	up := p.next()
+	log.Printf("%s %s via %s", r.Method, r.Host, up.url.Redacted())
 
 	if r.Method == http.MethodConnect {
 		p.handleConnect(w, r, up)
